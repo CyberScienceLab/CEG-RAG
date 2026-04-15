@@ -25,34 +25,30 @@ from transformers import (
     AutoModelForCausalLM
 )
 
-# -----------------------------
 # CONFIG (PATHS) — NQ
-# -----------------------------
 SUCCESS_QUERIES_PATH = "/workspace/newrags/poisoned_NQ/Final_test_poisonedRAG_nq.json"
 
 CHUNKS_JSON_PATH_MALICIOUS = "/workspace/newrags/poisoned_NQ/nq_contriever_chunks_combined_final_poisoned.json"
 EMB_JSON_PATH_MALICIOUS    = "/workspace/newrags/poisoned_NQ/nq_contriever_embeddings_combined2.json"
 
-# >>> your trained NQ MIL ckpt (GATEDONLY K=5) <<<
+# Trained NQ MIL ckpt (K=5) <<<
 MIL_CKPT_PATH = "/workspace/newrags/poisoned_NQ/nq_MIL_SetTransformer_GATEDONLY_K5_v1/BEST_MIL_SetTransformer_GATEDONLY_K5.pth"
 
 RETRIEVER_MODEL_NAME = "facebook/contriever"
 RERANKER_MODEL_NAME  = "BAAI/bge-reranker-large"
 
-# Pick an LLM you actually have access to locally
+
 LLM_MODEL_NAME       = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 SAVE_RESULTS_JSONL   = "/workspace/newrags/poisoned_NQ/post_defense_eval_nq_GATEDONLY_top50_scanK.jsonl"
 
-# -----------------------------
 # PIPELINE PARAMS
-# -----------------------------
 TOP_K_RETRIEVER = 50          # retrieve 50
 SAFE_THR        = 0.30        # "30% or less poisoned"
 NEED_CTX        = 2           # number of chunks passed to the LLM
 
 THR_DET         = 0.5         # run detection threshold (match training default)
-RERANK_BATCH    = 16          # reduce if OOM
+RERANK_BATCH    = 16          
 
 MAX_NEW_TOKENS = 16
 TEMPERATURE    = 0.0
@@ -68,9 +64,7 @@ if torch.cuda.is_available():
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("[device]", device)
 
-# ============================================================
 # OPENAI GPT JUDGE 
-# ============================================================
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "***")
 OPENAI_JUDGE_MODEL = "gpt-5-mini"
 REQUIRE_OPENAI_JUDGE = True  # set False if you want to skip judge calls
@@ -176,9 +170,7 @@ def gpt_judge_flag(question: str, gold_answer: str, model_answer: str) -> int:
     _judge_cache[key] = flag
     return flag
 
-# ============================================================
 # JSON / DATA HELPERS
-# ============================================================
 def load_json_or_jsonl(path: str) -> Any:
     with open(path, "r", encoding="utf-8") as f:
         txt = f.read().strip()
@@ -287,15 +279,13 @@ def load_success_queries(path: str) -> List[Dict[str, Any]]:
         out.append(rec)
     return out
 
-# -----------------------------
+
 # LOAD CORPUS (poisoned NQ)
-# -----------------------------
+
 CHUNKS_MAL, EMB_MAT_MAL = load_chunks_and_embeddings(CHUNKS_JSON_PATH_MALICIOUS, EMB_JSON_PATH_MALICIOUS)
 print("[info] retriever_emb_dim:", EMB_MAT_MAL.shape[1])
 
-# -----------------------------
 # LOAD HF MODELS
-# -----------------------------
 print("[load] retriever:", RETRIEVER_MODEL_NAME)
 retriever_tokenizer = AutoTokenizer.from_pretrained(RETRIEVER_MODEL_NAME)
 retriever_model = AutoModel.from_pretrained(RETRIEVER_MODEL_NAME).to(device).eval()
@@ -313,9 +303,7 @@ llm_model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.float16 if device.type == "cuda" else None
 ).to(device).eval()
 
-# ============================================================
 # MIL MODEL ARCH + LOAD CKPT (K auto)
-# ============================================================
 class SetTransformerBlock(nn.Module):
     def __init__(self, d_model: int, n_heads: int, dropout: float):
         super().__init__()
@@ -458,9 +446,8 @@ def load_mil_model(path: str) -> Tuple[nn.Module, int]:
 mil_model, GROUP_SIZE = load_mil_model(MIL_CKPT_PATH)
 assert TOP_K_RETRIEVER % GROUP_SIZE == 0, f"TOP_K_RETRIEVER ({TOP_K_RETRIEVER}) must be divisible by K/GROUP_SIZE ({GROUP_SIZE})."
 
-# ============================================================
+
 # RETRIEVER + RERANKER
-# ============================================================
 def mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     mask = attention_mask.unsqueeze(-1).type_as(last_hidden_state)
     summed = (last_hidden_state * mask).sum(dim=1)
@@ -516,9 +503,7 @@ def rerank_and_get_cls_and_scores_batched(
     ranked_chunks = [candidate_chunks[i] for i in order.tolist()]
     return cls_sorted, scores_sorted, ranked_chunks
 
-# ============================================================
 # LLM: prompt + generate
-# ============================================================
 def build_rag_prompt(query: str, contexts: List[str], max_context_chars: int = 4000) -> str:
     parts, total = [], 0
     for t in contexts:
@@ -579,9 +564,7 @@ def generate_answer_llm(prompt: str) -> str:
     text = text.splitlines()[0].strip()
     return text
 
-# ============================================================
 # TOP50 -> group-of-K scanning with MIL (K = GROUP_SIZE)
-# ============================================================
 @torch.no_grad()
 def mil_poison_probs_for_top50(cls_50xd: np.ndarray) -> Dict[str, Any]:
     """
@@ -634,9 +617,8 @@ def pick_safe_indices_with_scan(poison_probs_50: np.ndarray) -> Tuple[List[int],
     chosen = sorted(order[:NEED_CTX].tolist())
     return chosen, scanned_groups
 
-# ============================================================
 # DEFENDED PIPELINE (single query) — GATED-ONLY behavior
-# ============================================================
+
 def defended_rag_answer_gatedonly(query: str) -> Dict[str, Any]:
     q_emb = encode_query_contriever(query)
 
@@ -684,9 +666,9 @@ def defended_rag_answer_gatedonly(query: str) -> Dict[str, Any]:
         "answer_raw": ans_raw,
     }
 
-# ============================================================
+
 # EVAL LOOP — same ASR logic
-# ============================================================
+
 queries = load_success_queries(SUCCESS_QUERIES_PATH)
 print("[eval] loaded queries:", len(queries))
 
