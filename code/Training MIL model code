@@ -12,9 +12,8 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
 
 
-# -------------------------
 # CONFIG
-# -------------------------
+
 SEED = 7
 
 K = 5  # top-k reranked passages per run
@@ -46,7 +45,7 @@ BEST_CKPT_PTH = OUT_DIR / f"BEST_MIL_SetTransformer_GATEDONLY_K{K}.pth"
 REPORT_JSON   = OUT_DIR / f"test_report_gated_only.json"
 CALIB_JSON    = OUT_DIR / f"calibration.json"
 
-# ---- Build matrices from scratch ----
+# ---- Build matrices ----
 BUILD_MATRICES = True
 FORCE_REBUILD  = True  # set False if you want to reuse DATASET_NPZ
 
@@ -68,7 +67,7 @@ N_LAYERS = 3
 DROPOUT  = 0.15
 EMBED_DIM = 128  # for SupCon
 
-# ---- Loss knobs (RUN labels only) ----
+# ---- Loss knobs ----
 W_DET = 1.0
 
 # Positive coverage (helps chunk TPR but can raise FPR if too strong)
@@ -104,9 +103,8 @@ TOP_R = 2
 POISON_ID_SUBSTR = "gpt"
 
 
-# -------------------------
 # Reproducibility
-# -------------------------
+
 def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -117,9 +115,8 @@ def seed_everything(seed: int):
 seed_everything(SEED)
 
 
-# ============================================================
 # JSON / data helpers
-# ============================================================
+
 def _load_json_or_jsonl(path: str):
     """
     Supports:
@@ -246,11 +243,10 @@ def _load_chunks_and_embs(chunks_path: str, emb_path: str):
     return chunks, P
 
 
-# ============================================================
-# Build matrices from scratch:
+# Building matrices:
 #   Contriever(q) -> retrieve topK in pre-embedded corpus -> cross-encoder rerank
 #   Extract last-layer [CLS] hidden vector for each (q, p_i)
-# ============================================================
+
 @torch.no_grad()
 def _mean_pool(last_hidden, mask):
     mask = mask.unsqueeze(-1)
@@ -363,9 +359,8 @@ def build_dataset_npz(force_rebuild: bool = False):
     print(f"        X={X.shape} y={y.shape} unique_qids={len(np.unique(qids))}")
 
 
-# ============================================================
 # Split by qid (prevents leakage of same query across splits)
-# ============================================================
+
 def split_by_qid(qids: np.ndarray, train=0.7, val=0.15, seed=SEED):
     uq = np.unique(qids)
     rng = np.random.default_rng(seed)
@@ -384,9 +379,8 @@ def split_by_qid(qids: np.ndarray, train=0.7, val=0.15, seed=SEED):
     return tr_mask, va_mask, te_mask
 
 
-# ============================================================
-# SupCon loss (run labels only)
-# ============================================================
+# SupCon loss 
+
 def supervised_contrastive_loss(z: torch.Tensor, y: torch.Tensor, tau: float = 0.2) -> torch.Tensor:
     B = z.size(0)
     sim = (z @ z.t()) / max(tau, 1e-6)
@@ -405,9 +399,9 @@ def supervised_contrastive_loss(z: torch.Tensor, y: torch.Tensor, tau: float = 0
     return loss.mean()
 
 
-# ============================================================
+
 # Model: SetTransformer encoder + per-chunk head + attention MIL pooling
-# ============================================================
+
 class SetTransformerBlock(nn.Module):
     def __init__(self, d_model: int, n_heads: int, dropout: float):
         super().__init__()
@@ -494,9 +488,8 @@ class MIL_SetTransformer_AttnMIL(nn.Module):
         return chunk_logits, s, a, y_hat, emb
 
 
-# ============================================================
 # Dataset
-# ============================================================
+
 class RunDataset(Dataset):
     def __init__(self, X: np.ndarray, y: np.ndarray):
         self.X = X.astype(np.float32)
@@ -506,9 +499,8 @@ class RunDataset(Dataset):
         return torch.from_numpy(self.X[idx]), torch.tensor(self.y[idx], dtype=torch.long)
 
 
-# ============================================================
 # Metrics + eval-only chunk GT
-# ============================================================
+
 def _counts_from_preds(y_true: np.ndarray, y_pred: np.ndarray):
     tp = int(((y_true == 1) & (y_pred == 1)).sum())
     tn = int(((y_true == 0) & (y_pred == 0)).sum())
@@ -528,7 +520,7 @@ def _chunk_gt_eval_only(y_run: np.ndarray, chunk_ids_obj: np.ndarray) -> np.ndar
     """
     Eval-only chunk GT:
       - benign runs: all 0
-      - malicious runs: chunk=1 if POISON_ID_SUBSTR in chunk_id (case-insensitive)
+      - malicious runs: chunk=1 if POISON_ID_SUBSTR in chunk_id 
     """
     N = len(y_run)
     gt = np.zeros((N, K), dtype=np.int64)
@@ -545,9 +537,8 @@ def _chunk_gt_eval_only(y_run: np.ndarray, chunk_ids_obj: np.ndarray) -> np.ndar
     return gt
 
 
-# ============================================================
-# Calibration for thr_loc (benign val only, no chunk labels)
-# ============================================================
+# Calibration for thr_loc (no chunk labels)
+
 @torch.no_grad()
 def calibrate_thr_loc_benign_only(model: nn.Module, X_val: np.ndarray, y_val: np.ndarray,
                                   target_chunk_fpr: float) -> float:
@@ -567,9 +558,8 @@ def calibrate_thr_loc_benign_only(model: nn.Module, X_val: np.ndarray, y_val: np
     return thr
 
 
-# ============================================================
-# GATED-ONLY evaluation
-# ============================================================
+# Evaluation
+
 @torch.no_grad()
 def evaluate_gated_only(model: nn.Module, X_np: np.ndarray, y_np: np.ndarray, chunk_ids_obj: np.ndarray,
                         thr_det: float, thr_loc: float,
@@ -623,9 +613,8 @@ def evaluate_gated_only(model: nn.Module, X_np: np.ndarray, y_np: np.ndarray, ch
     return {"run_level": run_report, "chunk_level_eval_only_gated": chunk_report}
 
 
-# ============================================================
-# Train (run-label-only) + test report (gated-only)
-# ============================================================
+# Train (run-label-only) + test report 
+
 def train_and_test():
     print(f"[out] OUT_DIR = {OUT_DIR}")
 
